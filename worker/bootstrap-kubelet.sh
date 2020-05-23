@@ -1,7 +1,7 @@
 set -e
 
 # Download binaries
-wget -q --show-progress --https-only --timestamping \
+[ -f "/usr/local/bin/kubelet" ] || wget -q --show-progress --https-only --timestamping \
   https://storage.googleapis.com/kubernetes-release/release/v1.18.3/bin/linux/amd64/kube-proxy \
   https://storage.googleapis.com/kubernetes-release/release/v1.18.3/bin/linux/amd64/kubelet
 
@@ -17,16 +17,22 @@ sudo mkdir -p \
   /var/lib/kubernetes1 \
   /var/lib/kubernetes2 \
   /var/run/kubernetes1 \
-  /var/run/kubernetes2
+  /var/run/kubernetes2 \
+  /etc/kubernetes1/manifests \
+  /etc/kubernetes2/manifests
+
+# Create cni dirs
+sudo mkdir -p /etc/c1 /etc/c2
 
 # Install binaries
-{
+[ -f "kube-proxy" ] && {
   chmod +x kube-proxy kubelet
   sudo mv kube-proxy kubelet /usr/local/bin/
 }
-exit
+
 # Move the cert key and kubeconfig
-{
+[ -f "worker.key" ] && {
+
   sudo cp worker.key worker.crt /var/lib/kubelet1/
   sudo mv worker.key worker.crt /var/lib/kubelet2/
   sudo mv worker-c1.kubeconfig /var/lib/kubelet1/kubeconfig
@@ -89,19 +95,25 @@ cat <<EOF | sudo tee /etc/systemd/system/kubelet1.service
 [Unit]
 Description=Kubernetes Kubelet 1
 Documentation=https://github.com/kubernetes/kubernetes
-After=docker.service
-Requires=docker.service
+After=docker-cluster1.service
+Requires=docker-cluster1.service
 
 [Service]
 ExecStart=/usr/local/bin/kubelet \\
+  --root-dir=/var/lib/kubelet1/ \\
+  --pod-manifest-path=/etc/kubernetes1/manifests/ \\
   --config=/var/lib/kubelet1/kubelet-config.yaml \\
   --image-pull-progress-deadline=2m \\
   --kubeconfig=/var/lib/kubelet1/kubeconfig \\
   --tls-cert-file=/var/lib/kubelet1/worker.crt \\
   --tls-private-key-file=/var/lib/kubelet1/worker.key \\
   --network-plugin=cni \\
-  --cni-conf-dir=/etc/cni/net1.d \\
+  --cni-conf-dir=/etc/c1/cni/net.d \\
   --register-node=true \\
+  --container-runtime="docker" \\
+  --container-runtime-endpoint=unix:///var/run/dockershim-cluster1.sock \\
+  --docker-endpoint=unix:///var/run/docker-cluster1.sock \\
+  --cgroup-driver=systemd \\
   --v=2
 Restart=on-failure
 RestartSec=5
@@ -114,19 +126,25 @@ cat <<EOF | sudo tee /etc/systemd/system/kubelet2.service
 [Unit]
 Description=Kubernetes Kubelet 2
 Documentation=https://github.com/kubernetes/kubernetes
-After=docker.service
-Requires=docker.service
+After=docker-cluster2.service
+Requires=docker-cluster2.service
 
 [Service]
 ExecStart=/usr/local/bin/kubelet \\
+  --root-dir=/var/lib/kubelet1/ \\
+  --pod-manifest-path=/etc/kubernetes1/manifests/ \\
   --config=/var/lib/kubelet2/kubelet-config.yaml \\
   --image-pull-progress-deadline=2m \\
   --kubeconfig=/var/lib/kubelet2/kubeconfig \\
   --tls-cert-file=/var/lib/kubelet2/worker.crt \\
   --tls-private-key-file=/var/lib/kubelet2/worker.key \\
   --network-plugin=cni \\
-  --cni-conf-dir=/etc/cni/net2.d \\
+  --cni-conf-dir=/etc/c2/cni/net.d \\
   --register-node=true \\
+  --container-runtime="remote" \\
+  --container-runtime-endpoint=unix:///var/run/dockershim-cluster1.sock \\
+  --docker-endpoint=unix:///var/run/docker-cluster1.sock \\
+  --cgroup-driver=systemd \\
   --v=2
 Restart=on-failure
 RestartSec=5
@@ -136,8 +154,8 @@ WantedBy=multi-user.target
 EOF
 
 # Move kube-proxy conf
-#sudo mv kube-proxy1.kubeconfig /var/lib/kube-proxy1/kubeconfig
-#sudo mv kube-proxy2.kubeconfig /var/lib/kube-proxy2/kubeconfig
+[ -f kube-proxy1.kubeconfig ] && sudo mv kube-proxy1.kubeconfig /var/lib/kube-proxy1/kubeconfig
+[ -f kube-proxy2.kubeconfig ] && sudo mv kube-proxy2.kubeconfig /var/lib/kube-proxy2/kubeconfig
 
 # Generate kube-proxy conf
 # cluster 1
